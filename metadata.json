@@ -1,0 +1,6 @@
+{
+  "name": "Renmolt Ethical Validator",
+  "description": "A2A Ethical & Compliance Verification Node powered by x402 on Base USDC",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

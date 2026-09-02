@@ -1,0 +1,15 @@
+{
+  "name": "RENMOLT ETHICAL SYSTEMS Node",
+  "entity_id": "202603057004 (TR0338241-U)",
+  "version": "1.0.0",
+  "description": "Autonomous Agent-to-Agent Payload Validator and Compliance Referee",
+  "capabilities": ["payload_sanitization", "action_boundary_verification", "ethical_compliance"],
+  "pricing": {
+    "currency": "USDC",
+    "network": "base",
+    "cost_per_request": "0.05"
+  },
+  "endpoints": {
+    "audit": "/v1/audit"
+  }
+}
