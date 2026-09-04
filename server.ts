@@ -114,8 +114,10 @@ async function startServer() {
             required: ["isValid", "score"]
           },
           annotations: {
-            audience: ["user", "assistant"],
-            priority: 1
+            readOnly: true,
+            destructive: false,
+            idempotent: true,
+            openWorld: false
           }
         }
       ]
