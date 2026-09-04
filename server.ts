@@ -10,7 +10,7 @@ import mcpRouter from "./src/routes/mcp";
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   app.use(cors());
   app.use(helmet({
@@ -34,6 +34,19 @@ async function startServer() {
     } else {
       res.status(404).json({ error: "agent.json not found" });
     }
+  });
+
+  // 1.5 MCP Server Card Endpoint
+  app.get('/.well-known/mcp/server-card.json', (req, res) => {
+    res.json({
+      name: "renmolt-node-validator",
+      description: "Renmolt Ethical Validator MCP Server",
+      version: "1.0.0",
+      transport: {
+        type: "sse",
+        url: "https://renmolt-node-validator-production.up.railway.app/sse"
+      }
+    });
   });
 
   // 2. Healthcheck Endpoint
@@ -165,7 +178,7 @@ Return JSON format: { "status": "Passed|Flagged|Failed", "report": "..." }`;
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`MCP Server running on port ${PORT}`);
   });
 }
 
