@@ -93,13 +93,29 @@ async function startServer() {
       tools: [
         {
           name: "validate_node",
-          description: "Validate node compliance and ethics rules",
+          description: "Validate node compliance and ethics rules for specified node IDs",
           inputSchema: {
             type: "object",
             properties: {
-              nodeId: { type: "string", description: "The ID of the node to validate" }
+              nodeId: {
+                type: "string",
+                description: "The unique identifier of the target node to validate"
+              }
             },
             required: ["nodeId"]
+          },
+          outputSchema: {
+            type: "object",
+            properties: {
+              isValid: { type: "boolean" },
+              score: { type: "number" },
+              details: { type: "string" }
+            },
+            required: ["isValid", "score"]
+          },
+          annotations: {
+            audience: ["user", "assistant"],
+            priority: 1
           }
         }
       ]
