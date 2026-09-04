@@ -6,6 +6,7 @@ import { createServer as createViteServer } from "vite";
 import cors from "cors";
 import helmet from "helmet";
 import { GoogleGenAI } from "@google/genai";
+import mcpRouter from "./src/routes/mcp";
 
 async function startServer() {
   const app = express();
@@ -17,6 +18,9 @@ async function startServer() {
     crossOriginEmbedderPolicy: false,
   }));
   app.use(express.json());
+
+  app.use('/mcp', mcpRouter);
+
 
   const WALLET_ADDRESS = process.env.BASE_USDC_WALLET_ADDRESS || "0xF9C7c3022Bd8756E06172B37A6F9448a730638C9";
   const AUDIT_FEE_USDC = "0.05"; 
@@ -34,7 +38,12 @@ async function startServer() {
 
   // 2. Healthcheck Endpoint
   app.get('/health', (req, res) => {
-    res.json({ status: "online", entity: "RENMOLT ETHICAL SYSTEMS", timestamp: new Date().toISOString() });
+    res.json({ 
+      status: "online", 
+      entity: "RENMOLT ETHICAL SYSTEMS", 
+      agent_id: process.env.ERC8004_AGENT_ID || "84422",
+      timestamp: new Date().toISOString() 
+    });
   });
 
   // 3. Simple x402 Micro-Payment Middleware

@@ -13,7 +13,10 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@coinbase/agentkit": "^0.10.4",
+    "@coinbase/agentkit-model-context-protocol": "^0.2.0",
     "@google/genai": "^2.4.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "clsx": "^2.1.1",
