@@ -76,7 +76,7 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
 let transport: SSEServerTransport | null = null;
 
 router.get('/sse', async (req: Request, res: Response) => {
-  transport = new SSEServerTransport('/mcp/messages', res as any);
+  transport = new SSEServerTransport('/messages', res as any);
   await mcpServer.connect(transport);
 });
 
@@ -84,7 +84,7 @@ router.post('/messages', async (req: Request, res: Response) => {
   if (transport) {
     await transport.handlePostMessage(req as any, res as any);
   } else {
-    res.status(400).json({ error: "SSE transport session not established. Connect to /mcp/sse first." });
+    res.status(400).json({ error: "SSE transport session not established. Connect to /sse first." });
   }
 });
 

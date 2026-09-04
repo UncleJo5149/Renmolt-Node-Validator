@@ -19,8 +19,8 @@ async function startServer() {
   }));
   app.use(express.json());
 
-  app.use('/mcp', mcpRouter);
-
+  // Mount MCP router at the root so /sse and /messages are exposed directly
+  app.use('/', mcpRouter);
 
   const WALLET_ADDRESS = process.env.BASE_USDC_WALLET_ADDRESS || "0xF9C7c3022Bd8756E06172B37A6F9448a730638C9";
   const AUDIT_FEE_USDC = "0.05"; 
