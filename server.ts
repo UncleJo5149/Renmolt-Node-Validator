@@ -27,7 +27,7 @@ async function startServer() {
   // ==========================================
   const mcpServer = new Server(
     {
-      name: "renmolt-ethical-systems",
+      name: "renmolt-ethical-validator",
       version: "1.0.0",
     },
     {
@@ -39,15 +39,14 @@ async function startServer() {
     return {
       tools: [
         {
-          name: "audit_payload",
-          description: "Evaluates agent payload safety, compliance, and issues cryptographically signed audit proofs.",
+          name: "validate_node",
+          description: "Validate node compliance and ethics rules",
           inputSchema: {
             type: "object",
             properties: {
-              payload: { type: "object", description: "The payload or action object to evaluate." },
-              agent_id: { type: "string", description: "The requesting Agent ID or wallet address." }
+              nodeId: { type: "string", description: "The ID of the node to validate" }
             },
-            required: ["payload"]
+            required: ["nodeId"]
           }
         }
       ]
@@ -55,13 +54,13 @@ async function startServer() {
   });
 
   mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
-    if (request.params.name === "audit_payload") {
+    if (request.params.name === "validate_node") {
       const args = request.params.arguments as any;
-      const { payload, agent_id } = args || {};
+      const { nodeId } = args || {};
 
       const auditResult = {
         status: "APPROVED",
-        agent_id: agent_id || "anonymous",
+        nodeId: nodeId || "anonymous",
         timestamp: new Date().toISOString(),
         score: 0.98,
         signature: "0x_renmolt_ecdsa_signed_proof",
@@ -81,18 +80,29 @@ async function startServer() {
   // 2. REQUIRED ROUTES (Railway & Smithery)
   // ==========================================
   app.get('/', (req, res) => {
-    res.status(200).json({ status: "ok", service: "Renmolt Ethical Validator MCP Server" });
+    res.status(200).json({ status: "ok", service: "renmolt-ethical-validator" });
   });
 
   app.get('/.well-known/mcp/server-card.json', (req, res) => {
     res.status(200).json({
-      name: "renmolt-node-validator",
-      description: "Renmolt Ethical Validator MCP Server",
-      version: "1.0.0",
-      transport: {
-        type: "sse",
-        url: "https://renmolt-node-validator-production.up.railway.app/sse"
-      }
+      $schema: "https://schema.smithery.ai/server-card.json",
+      serverInfo: {
+        name: "renmolt-ethical-validator",
+        version: "1.0.0"
+      },
+      tools: [
+        {
+          name: "validate_node",
+          description: "Validate node compliance and ethics rules",
+          inputSchema: {
+            type: "object",
+            properties: {
+              nodeId: { type: "string", description: "The ID of the node to validate" }
+            },
+            required: ["nodeId"]
+          }
+        }
+      ]
     });
   });
 
