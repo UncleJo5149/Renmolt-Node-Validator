@@ -1,5 +1,5 @@
+import "dotenv/config";
 import express, { Request, Response, NextFunction } from "express";
-import PQueue from "p-queue";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
@@ -7,21 +7,60 @@ import { createServer as createViteServer } from "vite";
 import cors from "cors";
 import helmet from "helmet";
 import { GoogleGenAI } from "@google/genai";
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+
+/**
+ * Tiny concurrency limiter. Replaces p-queue so the production
+ * bundle does not import an ESM-only package from a host start script.
+ */
+class SimpleQueue {
+  private pending = 0;
+  private waiting: Array<() => void> = [];
+  private onAdd?: (waiting: number) => void;
+
+  constructor(private concurrency: number, onAdd?: (waiting: number) => void) {
+    this.onAdd = onAdd;
+  }
+
+  get size() {
+    return this.waiting.length;
+  }
+
+  async add<T>(fn: () => Promise<T>): Promise<T> {
+    this.onAdd?.(this.waiting.length + (this.pending >= this.concurrency ? 1 : 0));
+    if (this.pending >= this.concurrency) {
+      await new Promise<void>((resolve) => this.waiting.push(resolve));
+    }
+    this.pending += 1;
+    try {
+      return await fn();
+    } finally {
+      this.pending -= 1;
+      const next = this.waiting.shift();
+      if (next) next();
+    }
+  }
+}
 
 async function startServer() {
   const app = express();
-  // Railway dynamic port binding fallback
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;
+  const isProd = process.env.NODE_ENV === "production";
 
   app.use(cors());
-  app.use(helmet({
-    contentSecurityPolicy: false,
-    crossOriginEmbedderPolicy: false,
-  }));
-  app.use(express.json());
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginEmbedderPolicy: false,
+    })
+  );
+  app.use(express.json({ limit: "2mb" }));
+
+  if (!process.env.GEMINI_API_KEY) {
+    console.warn("[RENMOLT] GEMINI_API_KEY is not set. /health will stay up; /api/verify will fail.");
+  }
 
   // ==========================================
   // 1. MCP SERVER INITIALIZATION
@@ -29,7 +68,7 @@ async function startServer() {
   const mcpServer = new Server(
     {
       name: "renmolt-ethical-validator",
-      version: "1.0.0",
+      version: "1.0.1",
     },
     {
       capabilities: { tools: {} },
@@ -45,18 +84,18 @@ async function startServer() {
           inputSchema: {
             type: "object",
             properties: {
-              nodeId: { type: "string", description: "The ID of the node to validate" }
+              nodeId: { type: "string", description: "The ID of the node to validate" },
             },
-            required: ["nodeId"]
-          }
-        }
-      ]
+            required: ["nodeId"],
+          },
+        },
+      ],
     };
   });
 
   mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (request.params.name === "validate_node") {
-      const args = request.params.arguments as any;
+      const args = request.params.arguments as { nodeId?: string };
       const { nodeId } = args || {};
 
       const auditResult = {
@@ -65,11 +104,12 @@ async function startServer() {
         timestamp: new Date().toISOString(),
         score: 0.98,
         signature: "0x_renmolt_ecdsa_signed_proof",
-        node_identity: "84422"
+        node_identity: "84422",
+        note: "Prototype response. Policy engine not enforced yet.",
       };
 
       return {
-        content: [{ type: "text", text: JSON.stringify(auditResult, null, 2) }]
+        content: [{ type: "text", text: JSON.stringify(auditResult, null, 2) }],
       };
     }
     throw new Error(`Tool not found: ${request.params.name}`);
@@ -80,16 +120,27 @@ async function startServer() {
   // ==========================================
   // 2. REQUIRED ROUTES (Railway & Smithery)
   // ==========================================
-  app.get('/', (req, res) => {
-    res.status(200).json({ status: "ok", service: "renmolt-ethical-validator" });
+  // Do not bind GET / to JSON — that hid the UI and confused browsers.
+  app.get("/status", (_req, res) => {
+    res.status(200).json({ status: "ok", service: "renmolt-ethical-validator", version: "1.0.1" });
   });
 
-  app.get('/.well-known/mcp/server-card.json', (req, res) => {
+  app.get("/health", (_req, res) => {
+    res.json({
+      status: "online",
+      entity: "RENMOLT ETHICAL SYSTEMS",
+      agent_id: process.env.ERC8004_AGENT_ID || "84422",
+      gemini_configured: Boolean(process.env.GEMINI_API_KEY),
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  app.get("/.well-known/mcp/server-card.json", (_req, res) => {
     res.status(200).json({
       $schema: "https://schema.smithery.ai/server-card.json",
       serverInfo: {
         name: "renmolt-ethical-validator",
-        version: "1.0.0"
+        version: "1.0.1",
       },
       tools: [
         {
@@ -100,37 +151,37 @@ async function startServer() {
             properties: {
               nodeId: {
                 type: "string",
-                description: "The unique identifier of the target node to validate"
-              }
+                description: "The unique identifier of the target node to validate",
+              },
             },
-            required: ["nodeId"]
+            required: ["nodeId"],
           },
           outputSchema: {
             type: "object",
             properties: {
               isValid: { type: "boolean" },
               score: { type: "number" },
-              details: { type: "string" }
+              details: { type: "string" },
             },
-            required: ["isValid", "score"]
+            required: ["isValid", "score"],
           },
           annotations: {
             readOnly: true,
             destructive: false,
             idempotent: true,
-            openWorld: false
-          }
-        }
-      ]
+            openWorld: false,
+          },
+        },
+      ],
     });
   });
 
-  app.get('/sse', async (req: Request, res: Response) => {
-    transport = new SSEServerTransport('/messages', res as any);
+  app.get("/sse", async (_req: Request, res: Response) => {
+    transport = new SSEServerTransport("/messages", res as any);
     await mcpServer.connect(transport);
   });
 
-  app.post('/messages', async (req: Request, res: Response) => {
+  app.post("/messages", async (req: Request, res: Response) => {
     if (transport) {
       await transport.handlePostMessage(req as any, res as any);
     } else {
@@ -141,85 +192,99 @@ async function startServer() {
   // ==========================================
   // 3. EXISTING APP ROUTES
   // ==========================================
-  const WALLET_ADDRESS = process.env.BASE_USDC_WALLET_ADDRESS || "0xF9C7c3022Bd8756E06172B37A6F9448a730638C9";
+  const WALLET_ADDRESS =
+    process.env.BASE_USDC_WALLET_ADDRESS || "0xF9C7c3022Bd8756E06172B37A6F9448a730638C9";
   const AUDIT_FEE_USDC = "0.05";
 
-  app.get('/.well-known/agent.json', (req, res) => {
-    const agentCardPath = path.join(process.cwd(), 'public', 'agent.json');
+  app.get("/.well-known/agent.json", (_req, res) => {
+    const agentCardPath = path.join(process.cwd(), "public", "agent.json");
     if (fs.existsSync(agentCardPath)) {
-      res.json(JSON.parse(fs.readFileSync(agentCardPath, 'utf-8')));
+      res.json(JSON.parse(fs.readFileSync(agentCardPath, "utf-8")));
     } else {
       res.status(404).json({ error: "agent.json not found" });
     }
   });
 
-  app.get('/health', (req, res) => {
-    res.json({ 
-      status: "online", 
-      entity: "RENMOLT ETHICAL SYSTEMS", 
-      agent_id: process.env.ERC8004_AGENT_ID || "84422",
-      timestamp: new Date().toISOString() 
-    });
-  });
-
   const x402Middleware = (req: Request, res: Response, next: NextFunction) => {
-    const paymentSignature = req.headers['payment-signature'];
+    const paymentSignature = req.headers["payment-signature"];
     if (!paymentSignature) {
-      const paymentRequirements = Buffer.from(JSON.stringify({
-        scheme: "exact", network: "base", asset: "USDC", amount: AUDIT_FEE_USDC, payTo: WALLET_ADDRESS
-      })).toString('base64');
-      res.setHeader('PAYMENT-REQUIRED', paymentRequirements);
-      res.status(402).json({ error: "Payment Required", message: "Attach a valid x402 PAYMENT-SIGNATURE header to execute audit." });
+      const paymentRequirements = Buffer.from(
+        JSON.stringify({
+          scheme: "exact",
+          network: "base",
+          asset: "USDC",
+          amount: AUDIT_FEE_USDC,
+          payTo: WALLET_ADDRESS,
+        })
+      ).toString("base64");
+      res.setHeader("PAYMENT-REQUIRED", paymentRequirements);
+      res.status(402).json({
+        error: "Payment Required",
+        message: "Attach a valid x402 PAYMENT-SIGNATURE header to execute audit.",
+      });
       return;
     }
     next();
   };
 
-  app.post('/v1/audit', x402Middleware, (req: Request, res: Response) => {
+  app.post("/v1/audit", x402Middleware, (req: Request, res: Response) => {
     const { target_agent_id, payload_data, action_type } = req.body;
     if (!payload_data) {
       res.status(400).json({ error: "Invalid request. 'payload_data' is required." });
       return;
     }
 
-    const containsRisk = /drop table|exfiltrate|delete|eval\(|rm -rf/i.test(JSON.stringify(payload_data));
+    const containsRisk = /drop table|exfiltrate|delete|eval\(|rm -rf/i.test(
+      JSON.stringify(payload_data)
+    );
     const complianceScore = containsRisk ? 15 : 98;
     const verified = complianceScore >= 70;
     const timestamp = new Date().toISOString();
     const signatureData = `${target_agent_id}:${complianceScore}:${timestamp}`;
-    const mockSignature = crypto.createHmac('sha256', process.env.HMAC_SECRET || 'renmolt-secret').update(signatureData).digest('hex');
+    const mockSignature = crypto
+      .createHmac("sha256", process.env.HMAC_SECRET || "renmolt-secret")
+      .update(signatureData)
+      .digest("hex");
 
-    res.setHeader('PAYMENT-RESPONSE', Buffer.from(JSON.stringify({ status: "settled", tx: "verified_on_chain" })).toString('base64'));
-    res.json({ auditor: "RENMOLT ETHICAL SYSTEMS", entity_id: "202603057004 (TR0338241-U)", verified, compliance_score: complianceScore, action_type: action_type || "general_execution", timestamp, proof_signature: mockSignature });
+    res.setHeader(
+      "PAYMENT-RESPONSE",
+      Buffer.from(JSON.stringify({ status: "header_present_not_settled", tx: "unverified" })).toString(
+        "base64"
+      )
+    );
+    res.json({
+      auditor: "RENMOLT ETHICAL SYSTEMS",
+      entity_id: "202603057004 (TR0338241-U)",
+      verified,
+      compliance_score: complianceScore,
+      action_type: action_type || "general_execution",
+      timestamp,
+      proof_signature: mockSignature,
+      settlement: "unverified",
+    });
   });
 
   // ==========================================
   // 4. QUEUE & ALERT NOTIFICATION SYSTEM
   // ==========================================
-  // Concurrency set to 3 to prevent hitting Gemini API 429 limits during spikes
-  const geminiQueue = new PQueue({ concurrency: 3 });
-  
   let lastAlertTime = 0;
-  const ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes throttle
+  const ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 
   async function notifyAdmin(title: string, message: string) {
     const now = Date.now();
-    if (now - lastAlertTime < ALERT_COOLDOWN_MS) return; // Prevent spamming
+    if (now - lastAlertTime < ALERT_COOLDOWN_MS) return;
     lastAlertTime = now;
 
-    // 1. Console Log Alert (Always runs)
-    console.warn(`\n[🚨 SYSTEM ALERT] ${title}`);
-    console.warn(`[🚨 DETAILS] ${message}\n`);
-    
-    // 2. Webhook Push Notification (Runs if configured)
-    // To get pushes to your phone/slack, provide a webhook URL in environment variables.
+    console.warn(`\n[SYSTEM ALERT] ${title}`);
+    console.warn(`[DETAILS] ${message}\n`);
+
     const webhookUrl = process.env.DISCORD_OR_SLACK_WEBHOOK_URL;
     if (webhookUrl) {
       try {
         await fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: `**${title}**\n${message}` }) 
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: `**${title}**\n${message}` }),
         });
       } catch (err) {
         console.error("[RENMOLT] Failed to send webhook alert:", err);
@@ -227,13 +292,11 @@ async function startServer() {
     }
   }
 
-  // Monitor Queue Size for Traffic Influx
-  geminiQueue.on('add', () => {
-    // If more than 15 requests are waiting, alert the admin
-    if (geminiQueue.size > 15) {
+  const geminiQueue = new SimpleQueue(3, (waiting) => {
+    if (waiting > 15) {
       notifyAdmin(
-        "High Traffic Alert ⚠️", 
-        `The Gemini API verification queue is backing up. Current queue waiting size: ${geminiQueue.size}. Expect delayed responses for clients.`
+        "High Traffic Alert",
+        `The Gemini API verification queue is backing up. Current queue waiting size: ${waiting}. Expect delayed responses for clients.`
       );
     }
   });
@@ -252,30 +315,32 @@ async function startServer() {
       
 Document Title: ${filename}
 Document Content:
-${text.substring(0, 5000)}
+${String(text).substring(0, 5000)}
 
 Return JSON format: { "status": "Passed|Flagged|Failed", "report": "..." }`;
 
-      // Wrap the actual Gemini call in the Queue
       const result = await geminiQueue.add(async () => {
         try {
-          const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json" } });
+          const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: { responseMimeType: "application/json" },
+          });
           if (response.text) {
             return JSON.parse(response.text);
           }
           throw new Error("No response from AI");
         } catch (apiError: any) {
-          // Catch 429 Quota/Rate Limit Errors from the API
-          if (apiError?.status === 429 || apiError?.message?.includes('429')) {
+          if (apiError?.status === 429 || apiError?.message?.includes("429")) {
             notifyAdmin(
-              "Gemini API Rate Limit / Quota Hit 🛑", 
+              "Gemini API Rate Limit / Quota Hit",
               "The application just received a 429 Too Many Requests error from Gemini. The queue might be too aggressive or your quota is exhausted."
             );
           }
-          throw apiError; // Re-throw to be caught by the outer block and returned to the client
+          throw apiError;
         }
       });
-      
+
       res.json({ success: true, result });
     } catch (e: any) {
       console.error(e);
@@ -283,20 +348,33 @@ Return JSON format: { "status": "Passed|Flagged|Failed", "report": "..." }`;
     }
   });
 
-  // Vite middleware for development (conditionally skipped if overridden by GET / above)
-  if (process.env.NODE_ENV !== "production") {
+  if (!isProd) {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get('*', (req, res) => res.sendFile(path.join(distPath, 'index.html')));
+    app.get("*", (req, res, next) => {
+      if (req.path.startsWith("/api") || req.path.startsWith("/v1") || req.path.startsWith("/sse") || req.path.startsWith("/messages") || req.path.startsWith("/.well-known")) {
+        return next();
+      }
+      const indexFile = path.join(distPath, "index.html");
+      if (fs.existsSync(indexFile)) {
+        res.sendFile(indexFile);
+      } else {
+        res.status(200).json({ status: "ok", service: "renmolt-ethical-validator" });
+      }
+    });
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[RENMOLT] MCP Server listening on port ${PORT} at host 0.0.0.0`);
-    console.log(`[RENMOLT] SSE Transport ready at: http://0.0.0.0:${PORT}/sse`);
+    console.log(`[RENMOLT] Server listening on 0.0.0.0:${PORT} env=${process.env.NODE_ENV || "development"}`);
+    console.log(`[RENMOLT] Health: http://0.0.0.0:${PORT}/health`);
+    console.log(`[RENMOLT] SSE:    http://0.0.0.0:${PORT}/sse`);
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error("[RENMOLT] Fatal startup error:", err);
+  process.exit(1);
+});
