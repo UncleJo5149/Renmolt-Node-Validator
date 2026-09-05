@@ -1,4 +1,5 @@
 import express, { Request, Response, NextFunction } from "express";
+import PQueue from "p-queue";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
@@ -192,6 +193,51 @@ async function startServer() {
     res.json({ auditor: "RENMOLT ETHICAL SYSTEMS", entity_id: "202603057004 (TR0338241-U)", verified, compliance_score: complianceScore, action_type: action_type || "general_execution", timestamp, proof_signature: mockSignature });
   });
 
+  // ==========================================
+  // 4. QUEUE & ALERT NOTIFICATION SYSTEM
+  // ==========================================
+  // Concurrency set to 3 to prevent hitting Gemini API 429 limits during spikes
+  const geminiQueue = new PQueue({ concurrency: 3 });
+  
+  let lastAlertTime = 0;
+  const ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes throttle
+
+  async function notifyAdmin(title: string, message: string) {
+    const now = Date.now();
+    if (now - lastAlertTime < ALERT_COOLDOWN_MS) return; // Prevent spamming
+    lastAlertTime = now;
+
+    // 1. Console Log Alert (Always runs)
+    console.warn(`\n[🚨 SYSTEM ALERT] ${title}`);
+    console.warn(`[🚨 DETAILS] ${message}\n`);
+    
+    // 2. Webhook Push Notification (Runs if configured)
+    // To get pushes to your phone/slack, provide a webhook URL in environment variables.
+    const webhookUrl = process.env.DISCORD_OR_SLACK_WEBHOOK_URL;
+    if (webhookUrl) {
+      try {
+        await fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: `**${title}**\n${message}` }) 
+        });
+      } catch (err) {
+        console.error("[RENMOLT] Failed to send webhook alert:", err);
+      }
+    }
+  }
+
+  // Monitor Queue Size for Traffic Influx
+  geminiQueue.on('add', () => {
+    // If more than 15 requests are waiting, alert the admin
+    if (geminiQueue.size > 15) {
+      notifyAdmin(
+        "High Traffic Alert ⚠️", 
+        `The Gemini API verification queue is backing up. Current queue waiting size: ${geminiQueue.size}. Expect delayed responses for clients.`
+      );
+    }
+  });
+
   app.post("/api/verify", async (req, res) => {
     try {
       const { text, filename } = req.body;
@@ -210,13 +256,30 @@ ${text.substring(0, 5000)}
 
 Return JSON format: { "status": "Passed|Flagged|Failed", "report": "..." }`;
 
-      const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json" } });
+      // Wrap the actual Gemini call in the Queue
+      const result = await geminiQueue.add(async () => {
+        try {
+          const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt, config: { responseMimeType: "application/json" } });
+          if (response.text) {
+            return JSON.parse(response.text);
+          }
+          throw new Error("No response from AI");
+        } catch (apiError: any) {
+          // Catch 429 Quota/Rate Limit Errors from the API
+          if (apiError?.status === 429 || apiError?.message?.includes('429')) {
+            notifyAdmin(
+              "Gemini API Rate Limit / Quota Hit 🛑", 
+              "The application just received a 429 Too Many Requests error from Gemini. The queue might be too aggressive or your quota is exhausted."
+            );
+          }
+          throw apiError; // Re-throw to be caught by the outer block and returned to the client
+        }
+      });
       
-      if (response.text) res.json({ success: true, result: JSON.parse(response.text) });
-      else throw new Error("No response from AI");
+      res.json({ success: true, result });
     } catch (e: any) {
       console.error(e);
-      res.status(500).json({ error: e.message || String(e) });
+      res.status(e.status === 429 ? 429 : 500).json({ error: e.message || String(e) });
     }
   });
 
