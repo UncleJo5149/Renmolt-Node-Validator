@@ -2,7 +2,7 @@
 nixPkgs = ["nodejs_22"]
 
 [phases.install]
-cmds = ["npm install --legacy-peer-deps"]
+cmds = ["npm install --omit=dev"]
 
 [start]
-cmd = "node dist/server.js"
+cmd = "node server.js"
